@@ -1,0 +1,3 @@
+
+op_kwargs: 
+    columnas: ['ID', 'AñoNac', 'Educación', 'EstadoCivil', 'NiñosPeq', 'Adolescentes', 'FechaRegistro', 'Recencia', 'GastoVinos', 'GastoFrutas', 'GastoCarnes', 'GastoPescados', 'GastoDulces', 'GastoOro', 'ComprasDesc', 'ComprasWeb', 'ComprasCatálogo', 'ComprasTienda', 'VisitasWebMes', 'AceptóCmp3', 'AceptóCmp4', 'AceptóCmp5', 'AceptóCmp1', 'AceptóCmp2', 'Quejas', 'CostoContacto', 'Ingresos', 'Respuesta']

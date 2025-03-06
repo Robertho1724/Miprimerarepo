@@ -1,0 +1,3 @@
+op_kwargs:
+  mysql_conn_string: "mysql+pymysql://root:dwh@mysql_dwh:3306/dwh"
+  tabla_destino: "PF_base_marketing"

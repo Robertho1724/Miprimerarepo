@@ -1,0 +1,5 @@
+
+op_kwargs:
+  ruta_directorio: 'dags/MODULO_4/Proyecto_final/base_marketing.csv'
+extra:
+  parametro: 10

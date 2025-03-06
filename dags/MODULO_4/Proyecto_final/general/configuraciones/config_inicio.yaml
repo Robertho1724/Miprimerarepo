@@ -1,0 +1,5 @@
+
+
+filepath: '/opt/airflow/dags/MODULO_4/Proyecto_final/base_marketing.csv'
+poke_interval: 20  # Tiempo en segundos para la verificación
+timeout: 200  # Tiempo máximo de espera en segundos

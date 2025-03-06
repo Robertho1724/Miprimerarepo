@@ -1,0 +1,235 @@
+version: '3.8'
+
+# Definición de variables comunes para los servicios de Airflow
+x-airflow-common:
+  &airflow-common
+  # Build de la imagen Docker utilizando el Dockerfile en el mismo directorio
+  build: .
+  environment:
+    &airflow-common-env
+    # Configuración del ejecutor de Airflow (CeleryExecutor)
+    AIRFLOW__CORE__EXECUTOR: CeleryExecutor
+    # Configuración de la conexión a la base de datos (PostgreSQL)
+    AIRFLOW__DATABASE__SQL_ALCHEMY_CONN: postgresql+psycopg2://airflow:airflow@postgres/airflow
+    # Backend de resultados para Celery (PostgreSQL)
+    AIRFLOW__CELERY__RESULT_BACKEND: db+postgresql://airflow:airflow@postgres/airflow
+    # URL del broker de Celery (Redis)
+    AIRFLOW__CELERY__BROKER_URL: redis://redis:6379/0
+    # Clave Fernet (en blanco por defecto, debe configurarse en producción)
+    AIRFLOW__CORE__FERNET_KEY: ''
+    # Indica si los DAGs están pausados al ser creados
+    AIRFLOW__CORE__DAGS_ARE_PAUSED_AT_CREATION: 'true'
+    # Indica si se deben cargar los DAGs de ejemplo (desactivado)
+    AIRFLOW__CORE__LOAD_EXAMPLES: 'false'
+    # Configuración de autenticación para la API de Airflow
+    AIRFLOW__API__AUTH_BACKENDS: 'airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session'
+    # Habilita la verificación de salud del scheduler
+    AIRFLOW__SCHEDULER__ENABLE_HEALTH_CHECK: 'true'
+    # Dependencias adicionales de PIP (en blanco por defecto)
+    _PIP_ADDITIONAL_REQUIREMENTS: ${_PIP_ADDITIONAL_REQUIREMENTS:-}
+    # Intervalo de revisión de directorios de DAGs
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: 90
+    # Configuración de exposición de configuración en la interfaz web
+    AIRFLOW__WEBSERVER__EXPOSE_CONFIG: 'true'
+    # Entorno configurado (en este caso, 'prod')
+    ENVIRONMENT: 'prod'
+
+  # Volúmenes compartidos entre los servicios de Airflow
+  volumes:
+    - ${AIRFLOW_PROJ_DIR:-.}/dags:/opt/airflow/dags
+    - ${AIRFLOW_PROJ_DIR:-.}/logs:/opt/airflow/logs
+    - ${AIRFLOW_PROJ_DIR:-.}/config:/opt/airflow/config
+    - ${AIRFLOW_PROJ_DIR:-.}/plugins:/opt/airflow/plugins
+  # Usuario con el que se ejecutarán los contenedores de Airflow
+  user: "${AIRFLOW_UID:-50000}:0"
+  depends_on:
+    &airflow-common-depends-on
+    # Dependencias comunes: Redis y PostgreSQL deben estar saludables antes de iniciar Airflow
+    redis:
+      condition: service_healthy
+    postgres:
+      condition: service_healthy
+
+services:
+  # Servicio de base de datos PostgreSQL
+  postgres:
+    image: postgres:13
+    environment:
+      POSTGRES_USER: airflow
+      POSTGRES_PASSWORD: airflow
+      POSTGRES_DB: airflow
+    volumes:
+      - postgres-db-volume:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD", "pg_isready", "-U", "airflow"]
+      interval: 10s
+      retries: 5
+      start_period: 5s
+    restart: always
+
+  # Servicio de Redis (Broker de Celery)
+  redis:
+    image: redis:latest
+    expose:
+      - 6379
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 30s
+      retries: 50
+      start_period: 30s
+    restart: always
+
+  # Servicio del servidor web de Airflow
+  airflow-webserver:
+    <<: *airflow-common
+    command: webserver
+    ports:
+      - "8085:8080"  # Expone el servidor web en el puerto 8085
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8085/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Servicio del scheduler de Airflow
+  airflow-scheduler:
+    <<: *airflow-common
+    command: scheduler
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:8974/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Servicio de los trabajadores de Celery
+  airflow-worker:
+    <<: *airflow-common
+    command: celery worker
+    healthcheck:
+      test:
+        - "CMD-SHELL"
+        - 'celery --app airflow.executors.celery_executor.app inspect ping -d "celery@$${HOSTNAME}"'
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    environment:
+      <<: *airflow-common-env
+      DUMB_INIT_SETSID: "0"  # Configuración para manejo adecuado de señales en Celery
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Servicio del triggerer de Airflow
+  airflow-triggerer:
+    <<: *airflow-common
+    command: triggerer
+    healthcheck:
+      test: ["CMD-SHELL", 'airflow jobs check --job-type TriggererJob --hostname "$${HOSTNAME}"']
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Servicio para inicializar la base de datos y el usuario de Airflow
+  airflow-init:
+    <<: *airflow-common
+    entrypoint: /bin/bash
+    command:
+      - -c
+      - |
+        # Verificación de la versión de Airflow
+        function ver() {
+          printf "%04d%04d%04d%04d" $${1//./ }
+        }
+        airflow_version=$$(AIRFLOW__LOGGING__LOGGING_LEVEL=INFO && gosu airflow airflow version)
+        airflow_version_comparable=$$(ver $${airflow_version})
+        min_airflow_version=2.2.0
+        min_airflow_version_comparable=$$(ver $${min_airflow_version})
+        if (( airflow_version_comparable < min_airflow_version_comparable )); then
+          echo -e "\033[1;31mERROR!!!: Too old Airflow version $${airflow_version}!\e[0m"
+          exit 1
+        fi
+        # Configuración inicial de directorios y permisos
+        mkdir -p /sources/logs /sources/dags /sources/plugins
+        chown -R "${AIRFLOW_UID}:0" /sources/{logs,dags,plugins}
+        exec /entrypoint airflow version
+    environment:
+      <<: *airflow-common-env
+      _AIRFLOW_DB_UPGRADE: 'true'  # Indica que se debe hacer upgrade de la base de datos
+      _AIRFLOW_WWW_USER_CREATE: 'true'  # Indica que se debe crear un usuario en la interfaz web
+      _AIRFLOW_WWW_USER_USERNAME: ${_AIRFLOW_WWW_USER_USERNAME:-airflow}
+      _AIRFLOW_WWW_USER_PASSWORD: ${_AIRFLOW_WWW_USER_PASSWORD:-airflow}
+    user: "0:0"
+    volumes:
+      - ${AIRFLOW_PROJ_DIR:-.}:/sources
+
+  # Servicio CLI para depuración de Airflow
+  airflow-cli:
+    <<: *airflow-common
+    profiles:
+      - debug
+    environment:
+      <<: *airflow-common-env
+      CONNECTION_CHECK_MAX_COUNT: "0"  # Desactiva la verificación de conexiones en CLI
+    command:
+      - bash
+      - -c
+      - airflow
+
+  # Servicio de Flower para monitorizar y administrar los trabajadores de Celery
+  flower:
+    <<: *airflow-common
+    command: celery flower
+    profiles:
+      - flower
+    ports:
+      - "5555:5555"  # Expone Flower en el puerto 5555
+    healthcheck:
+      test: ["CMD", "curl", "--fail", "http://localhost:5555/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 30s
+    restart: always
+    depends_on:
+      <<: *airflow-common-depends-on
+      airflow-init:
+        condition: service_completed_successfully
+
+  # Servicio de MySQL para Data Warehouse
+  mysql_dwh:
+    image: mysql:8.0
+    restart: always
+    environment:
+      MYSQL_ROOT_PASSWORD: dwh  # Contraseña para el usuario root de MySQL
+      MYSQL_DATABASE: dwh  # Nombre de la base de datos que se creará
+    container_name: mysql_dwh
+    volumes:
+      - mysql-dwh-volume:/var/lib/mysql
+    ports:
+      - 3306:3306  # Expone MySQL en el puerto 3306
+
+volumes:
+  postgres-db-volume:  # Volumen para la base de datos de PostgreSQL
+  mysql-dwh-volume:  # Volumen para la base de datos de MySQL

@@ -1,0 +1,4 @@
+  # config_extraer_secundario.yaml
+op_kwargs:
+  ruta_otro_directorio: '/opt/airflow/dags/MODULO_4/Proyecto_final/otro_archivo.csv'
+
