@@ -19,7 +19,8 @@ default_args = {
 }
 
 
-# Función para extracción de datos de MySQL (con DISTINCT)
+# Función para extracción de datos de MySQL (con DISTINCT) 
+# ESTO ESTARA EN GITHBU
 def extraer_datos_mysql(ti):
     engine = create_engine("mysql+pymysql://root:dwh@mysql_dwh:3306/dwh")
     connection = engine.connect()
